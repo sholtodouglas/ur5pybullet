@@ -36,7 +36,7 @@ from itertools import chain
 
 import random
 import pybullet_data
-from rbx1 import rbx1
+
 from kuka import kuka
 from ur5 import ur5
 import sys

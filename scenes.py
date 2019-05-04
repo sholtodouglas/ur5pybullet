@@ -1,5 +1,4 @@
 import pybullet as p
-from rbx1 import rbx1
 from kuka import kuka
 from ur5 import ur5
 import pybullet_data
