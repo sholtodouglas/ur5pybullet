@@ -177,10 +177,10 @@ class graspingEnv(gym.Env):
         # select which image you want!
 
 
-        top_down_img = p.getCameraImage(500, 500, viewMatrix,projectionMatrix, shadow=0,renderer=image_renderer)
-        #grip_img = gripper_camera(self._observation)
+        #top_down_img = p.getCameraImage(500, 500, viewMatrix,projectionMatrix, shadow=0,renderer=image_renderer)
+        grip_img = gripper_camera(self._observation)
         obs = [self._observation, scene_obs]
-        return obs, top_down_img
+        return obs, grip_img
 
     #moves motors to desired pos
     def step(self, action):
