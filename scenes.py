@@ -76,6 +76,10 @@ def load_lab_Z_up():
 	block_blue = [p.loadURDF((os.path.join(meshPath,"block_blue.urdf")), -0.05,0.0,0,0.400000,0.707107,0.000000,0.707107)]
 	return [jenga, block_red, block_blue, plate]
 
+def throwing_scene():
+	block_red = [p.loadURDF((os.path.join(meshPath,"cube_small.urdf")), 0.0,0.0,0.05,0.400000,0.707107,0.000000,0.707107)]
+	table = [p.loadURDF((os.path.join(urdfRoot,"table/table.urdf")), 0.0,0.0,-0.70000,0.000000,0.000000,0.707107,0.707107)]
+	return [block_red]
 
 
 def load_gripper():

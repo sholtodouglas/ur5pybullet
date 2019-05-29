@@ -1,19 +1,5 @@
-# #
-# physicsClient = p.connect(p.GUI) #p.direct for non GUI version
-# p.setAdditionalSearchPath(pybullet_data.getDataPath()) #used by loadURDF
-# p.setGravity(0,0,-10)
-# planeId = p.loadURDF("plane.urdf")
-# cubeStartPos = [0,0,4]
-# cubeStartOrientation = p.getQuaternionFromEuler([0,0,0])
-# boxId = p.loadURDF("r2d2.urdf",cubeStartPos, cubeStartOrientation)
-# p.stepSimulation()
-# cubePos, cubeOrn = p.getBasePositionAndOrientation(boxId)
 
-# while cubePos[2] > 2:
-# 	p.stepSimulation()
-# 	cubePos, cubeOrn = p.getBasePositionAndOrientation(boxId)
-# print(cubePos,cubeOrn)
-# p.disconnect()
+
 
 import os, inspect
 import time
@@ -41,34 +27,41 @@ from kuka import kuka
 from ur5 import ur5
 import sys
 from scenes import * # where our loading stuff in functions are held
-
+import imageio
+import cv2
 
 viewMatrix = p.computeViewMatrixFromYawPitchRoll(cameraTargetPosition = [0,0,0], distance = 0.3, yaw = 90, pitch = -90, roll = 0, upAxisIndex = 2) 
 projectionMatrix = p.computeProjectionMatrixFOV(fov = 120,aspect = 1,nearVal = 0.01,farVal = 10)
 
 image_renderer = p.ER_BULLET_HARDWARE_OPENGL # if the rendering throws errors, use ER_TINY_RENDERER, but its hella slow cause its cpu not gpu.
-
+cam_dims = 200
 
 
 def gripper_camera(obs):
-    # Center of mass position and orientation (of link-7)
-    pos = obs[-7:-4] 
-    ori = obs[-4:] # last 4
-    # rotation = list(p.getEulerFromQuaternion(ori))
-    # rotation[2] = 0
-    # ori = p.getQuaternionFromEuler(rotation)
+	# Center of mass position and orientation (of link-7)
+	pos = obs[-7:-4] 
+	ori = obs[-4:] # last 4
+	# rotation = list(p.getEulerFromQuaternion(ori))
+	# rotation[2] = 0
+	# ori = p.getQuaternionFromEuler(rotation)
 
-    rot_matrix = p.getMatrixFromQuaternion(ori)
-    rot_matrix = np.array(rot_matrix).reshape(3, 3)
-    # Initial vectors
-    init_camera_vector = (1, 0, 0) # z-axis
-    init_up_vector = (0, 1, 0) # y-axis
-    # Rotated vectors
-    camera_vector = rot_matrix.dot(init_camera_vector)
-    up_vector = rot_matrix.dot(init_up_vector)
-    view_matrix_gripper = p.computeViewMatrix(pos, pos + 0.1 * camera_vector, up_vector)
-    img = p.getCameraImage(200, 200, view_matrix_gripper, projectionMatrix,shadow=0, flags = p.ER_NO_SEGMENTATION_MASK, renderer=image_renderer)
+	rot_matrix = p.getMatrixFromQuaternion(ori)
+	rot_matrix = np.array(rot_matrix).reshape(3, 3)
+	# Initial vectors
+	init_camera_vector = (1, 0, 0) # z-axis
+	init_up_vector = (0, 1, 0) # y-axis
+	# Rotated vectors
+	camera_vector = rot_matrix.dot(init_camera_vector)
+	up_vector = rot_matrix.dot(init_up_vector)
+	view_matrix_gripper = p.computeViewMatrix(pos, pos + 0.1 * camera_vector, up_vector)
+	img = p.getCameraImage(cam_dims, cam_dims, view_matrix_gripper, projectionMatrix,shadow=0, flags = p.ER_NO_SEGMENTATION_MASK, renderer=image_renderer)
+	w = img[0]
+	h = img[1]
+	rgb = img[2]
+	dep = img[3]
+	np_img_arr = np.reshape(rgb, (h,w,4))
 
+	return img, np_img_arr[:,:,:3]
 
 class graspingEnv(gym.Env):
     metadata = {
@@ -129,7 +122,7 @@ class graspingEnv(gym.Env):
         p.setPhysicsEngineParameter(numSolverIterations=150)
         if not self._vr:
             p.setTimeStep(self._timeStep)
-        self.objects = load_lab_Z_up()
+        self.objects = throwing_scene()
 
         p.setGravity(0, 0, -10)
         if self._arm_str == 'rbx1':
@@ -178,9 +171,9 @@ class graspingEnv(gym.Env):
 
 
         #top_down_img = p.getCameraImage(500, 500, viewMatrix,projectionMatrix, shadow=0,renderer=image_renderer)
-        grip_img = gripper_camera(self._observation)
+        #grip_img = gripper_camera(self._observation)
         obs = [self._observation, scene_obs]
-        return obs, grip_img
+        return obs
 
     #moves motors to desired pos
     def step(self, action):
@@ -253,7 +246,236 @@ class graspingEnv(gym.Env):
         return np.array(self._observation), motor_poses, reward, done, {}
 
 
-def move_in_xyz(environment, arm, abs_rel):
+def get_block_orn(img):
+
+	loc = np.where(img > 0) # find red pixels
+
+	if len(loc[0]) == 0: # if there are no red pixels in view
+		gradient = 0
+
+	else: # seen red pixels, go to them
+
+		y_pixels = loc[1]
+		x_pixels = loc[0]
+
+		line = np.poly1d(np.polyfit(x_pixels, y_pixels, 1))# fit a line to determine block angle
+		gradient = line[1] # angle of the block from gripper
+
+	return gradient
+
+def throw(environment, arm, action, xyz, ori, grip, cube_pos, grasped, lifted, throw_timeout, img, throw_range):
+	
+	
+	
+	if time.time() < throw_timeout + 1: # let it rest open after throwing
+		motor_poses = [0.0, 0.4473683834075928, -0.7105262279510498, 0.4210524559020996, 1.5, 0.0, -0.1, 0.1, 0.0, 0.0]
+		environment._arm.action(motor_poses)
+	else:
+		if lifted > 10:
+			# thus this shouldo only occur once
+			
+			action, grasped, lifted = throw_primitive(environment, arm, action, xyz, grasped, lifted, throw_range)
+			throw_timeout = time.time()
+		elif grasped > 10:
+			action, grasped, lifted = lift_primitive(environment, arm, action, xyz, ori, grasped, lifted, img)
+			throw_timeout = 0
+		else:
+			action, grasped, lifted = grasp_primitive(environment, arm, action, xyz, ori, grip, cube_pos, grasped, lifted, img)
+			throw_timeout = 0
+	return action , grasped, lifted, throw_timeout 
+
+def grasp_primitive(environment, arm, action, xyz, ori, grip, cube_pos, grasped, lifted, img):
+
+	
+	## move above
+
+	loc = np.where(img > 0) # find red pixels
+
+	if len(loc[0]) == 0: # if there are no red pixels in view
+		action[0] = 0.0
+		action[1] = 0.0
+		action[2] = 0.4
+
+	else: # seen red pixels, go to them
+		y_relative_dir = np.mean(loc[0]) - cam_dims/2 
+		x_relative_dir = np.mean(loc[1]) - cam_dims/2 
+
+		
+		
+		action[0] = xyz[0] + x_relative_dir*0.0005#cube_pos[0]
+		action[1] = xyz[1] - y_relative_dir*0.0005
+
+		y_pixels = loc[1]
+		x_pixels = loc[0]
+		line = np.poly1d(np.polyfit(x_pixels, y_pixels, 1))# fit a line to determine block angle
+		gradient = line[1] # angle of the block from gripper
+		
+		if  (  (xyz[0] - cube_pos[0]) < 0.02) and ( (xyz[1] - cube_pos[1]) <0.02) and ((xyz[2] - cube_pos[2]) < 0.13):
+			if xyz[2] > cube_pos[2]+0.05:
+				action[2] = xyz[2] - 0.005
+			else:
+				action[2] = xyz[2] + 0.005
+
+			action[7] = grip*25 +0.1 # grip is in 0-0.04 scale
+			print('grasping')
+			
+			
+			grasped += 0.5
+			action[3:7] = p.getQuaternionFromEuler([ori[0] - gradient*0.5, ori[1], ori[2]]) # adjust gripper angle to suit block
+			
+
+		elif ((xyz[0] - cube_pos[0]) < 0.02) and ((xyz[1] - cube_pos[1]) <0.02):
+			#we are close enough to move down
+			
+			print('moving to grasp')
+			if xyz[2] > cube_pos[2]+0.05:
+				action[2] = xyz[2] - (xyz[2]-0.05)**2
+			else:
+				action[2] = xyz[2] + (xyz[2]-0.05)**2
+				
+			action[3:7] = p.getQuaternionFromEuler([ori[0] - gradient*0.5, ori[1], ori[2]]) # adjust gripper angle to suit block
+		else:
+			# go above it
+			print('moving above')
+
+			action[2] = cube_pos[2]+0.2
+
+	return action, grasped, lifted
+
+
+def drop_primitive(environment, arm, action, xyz, grasped, lifted, img):
+	for i in range(0,50):
+		action[7] = 0.0
+		action[2] = 0.2
+		environment.step_to(action)
+
+def lift_primitive(environment, arm, action, xyz, ori, grasped, lifted, img):
+	print('lifting')
+
+	gradient = get_block_orn(img)
+	if abs(gradient) > 0.1:
+		print("misaligned, dropping")
+		grasped = 0
+		lifted = 0
+		drop_primitive(environment, arm, action, xyz, grasped, lifted, img)
+		action[7] = 0.0
+		action[2] = 0.3
+	else:
+		action[7] = 0.8
+		action[2] = 0.25
+
+
+	# des_eul = p.getEulerFromQuaternion(action[3:7] )
+	# action[3:7] = p.getQuaternionFromEuler([ori[0]+0.05*(des_eul[0] - ori[0]), ori[1], ori[2]]) # adjust gripper angle to suit block
+
+	action[0] = 0.0
+	action[1] = 0.0
+	
+	
+
+	if xyz[2] > 0.21:
+		lifted +=1
+	return action, grasped, lifted
+
+
+def move_to_throw_pos_with_speed(environment, arm, motorCommands, throw_range):
+    poses = []
+    indexes = []
+    forces = []
+
+
+
+    for i, name in enumerate(environment._arm.controlJoints):
+        joint = environment._arm.joints[name]
+
+        poses.append(motorCommands[i])
+        indexes.append(joint.id)
+        forces.append(joint.maxForce)
+    l = len(poses)
+
+    targetVelocities = [0]*l
+    targetVelocities[1] = 2*throw_range
+    targetVelocities[2] = 10*throw_range
+    targetVelocities[3] = 0.3
+
+    p.setJointMotorControlArray(environment._arm.uid, indexes, p.POSITION_CONTROL, targetPositions=poses, targetVelocities =targetVelocities, positionGains = [0.03]*l, forces = forces)
+
+
+def throw_primitive(environment, arm, action, xyz, grasped, lifted, throw_range):
+	print('throwing')
+	print('throwrange-----',throw_range)
+	motor_poses = [0.0, 0.4473683834075928*throw_range, -0.7105262279510498*throw_range, 0.2210524559020996, 1.5, 0.0, 0.1, -0.1, 0.0, 0.0]#list(p.calculateInverseKinematics(environment._arm.uid, environment._arm.endEffectorIndex, action[0:3], action[3:7]))
+	
+
+	observation = environment._arm.getObservation()
+	xyz = observation[-7:-4] 
+
+	print(motor_poses)
+	
+	while ((xyz[0] < 0.3) and (xyz[2] < 0.3)):
+		move_to_throw_pos_with_speed(environment, arm, motor_poses, throw_range)
+		p.stepSimulation()
+		
+
+		observation = environment._arm.getObservation()
+		xyz = observation[-7:-4] 
+		print(xyz)
+
+	# now release
+	action[7] = 0.0
+	grasped = 0
+	lifted = 0
+
+	
+
+	
+	return action, grasped, lifted# once done with the throw, just chill in extended position
+
+
+
+
+def process_image(rgb):
+	# hsv = cv2.cvtColor(rgb, cv2.COLOR_RGB2HSV)
+	# lower_red = np.array([30,150,50])
+	# upper_red = np.array([255,255,180])
+
+	# mask = cv2.inRange(hsv, lower_red, upper_red)
+	# res = cv2.bitwise_and(rgb,rgb, mask= mask)
+	# print(res.shape)
+
+	# return res
+
+	hsv = cv2.cvtColor(rgb,cv2.COLOR_RGB2HSV)
+
+	#lower red
+	lower_red = np.array([0,50,50])
+	upper_red = np.array([10,255,255])
+
+
+	#upper red
+	lower_red2 = np.array([170,50,50])
+	upper_red2 = np.array([180,255,255])
+
+	mask = cv2.inRange(hsv, lower_red, upper_red)
+	res = cv2.bitwise_and(rgb,rgb, mask= mask)
+
+	mask2 = cv2.inRange(hsv, lower_red2, upper_red2)
+	res2 = cv2.bitwise_and(rgb,rgb, mask= mask2)
+
+	img3 = res+res2 #res1 is doing all the work here
+	
+	np.save("img",img3)
+	return img3
+	
+
+def save_image(rgb):
+	
+	imageio.imwrite('rgb.jpg', rgb)
+
+
+
+
+def move_in_xyz(environment, arm, abs_rel = 'abs'):
 
     motorsIds = []
 
@@ -265,8 +487,8 @@ def move_in_xyz(environment, arm, abs_rel):
     observation = environment._arm.getObservation()
     xyz = observation[-7:-4] 
     ori = p.getEulerFromQuaternion(observation[-4:])
+
     if abs_rel == 'abs': 
-        print(arm)
 
         if arm == 'ur5':
             xin = xyz[0]
@@ -275,13 +497,7 @@ def move_in_xyz(environment, arm, abs_rel):
             rin = ori[0]
             pitchin = ori[1]
             yawin = ori[2]
-        else:
-            xin = 0.537
-            yin = 0.0
-            zin = 0.5
-            rin = math.pi/2
-            pitchin = -math.pi/2
-            yawin = 0
+
 
         motorsIds.append(environment._p.addUserDebugParameter("X", -abs_distance, abs_distance, xin))
         motorsIds.append(environment._p.addUserDebugParameter("Y", -abs_distance, abs_distance, yin))
@@ -290,23 +506,45 @@ def move_in_xyz(environment, arm, abs_rel):
         motorsIds.append(environment._p.addUserDebugParameter("pitch", -math.pi, math.pi, pitchin))
         motorsIds.append(environment._p.addUserDebugParameter("yaw", -math.pi, math.pi, yawin))
 
-    else:
-        motorsIds.append(environment._p.addUserDebugParameter("dX", -dv, dv, 0))
-        motorsIds.append(environment._p.addUserDebugParameter("dY", -dv, dv, 0))
-        motorsIds.append(environment._p.addUserDebugParameter("dZ", -dv, dv, 0))
-        if arm == 'rbx1':
-            motorsIds.append(environment._p.addUserDebugParameter("wrist_rotation", -0.1, 0.1, 0))
-            motorsIds.append(environment._p.addUserDebugParameter("wrist_flexsion", -0.1, 0.1, 0))
-        else:
-            motorsIds.append(environment._p.addUserDebugParameter("roll", -dv, dv, 0))
-            motorsIds.append(environment._p.addUserDebugParameter("pitch", -dv, dv, 0))
-            motorsIds.append(environment._p.addUserDebugParameter("yaw", -dv, dv, 0))
     motorsIds.append(environment._p.addUserDebugParameter("fingerAngle", 0, 1.5, .3))
-
+    grasp_switch = environment._p.addUserDebugParameter("grasp", 0,2, 0)
+    throw_switch = environment._p.addUserDebugParameter("throw", 0,2, 0)
+    throw_range = environment._p.addUserDebugParameter("range", 0,5, 1)
     done = False
+
+
+    grasped = 0
+    lifted = 0
+    throw_timeout  = 0
+
+
     while (not done):
 
         action = []
+
+        # get state
+        observation = environment._arm.getObservation()
+        grip_img, rgb = gripper_camera(observation)
+        
+        img = process_image(rgb)
+        save_image(img)
+        xyz = observation[-7:-4] 
+        ori = p.getEulerFromQuaternion(observation[-4:])
+        grip = observation[6]
+        print(grip)
+        
+
+        cube_pos = get_scene_observation(environment.objects)[0:3]
+        if cube_pos[2] < -0.1: #reset cube if it falls below table.
+        	p.resetBasePositionAndOrientation(environment.objects[0][0], [0,0,0], [0.400000,0.707107,0.000000,0.707107])
+
+
+        
+        if xyz[2] < 0.21:
+        	lifted = 0
+        if not ( (  (xyz[0] - cube_pos[0]) < 0.02) or ( (xyz[1] - cube_pos[1]) <0.02) or ((xyz[2] - cube_pos[2]) < 0.15)):
+            grasped = 0
+
 
         for motorId in motorsIds:
             # print(environment._p.readUserDebugParameter(motorId))
@@ -319,7 +557,15 @@ def move_in_xyz(environment, arm, abs_rel):
         
         # action is xyz positon, orietnation quaternion, gripper closedness. 
         action = action[0:3] + list(p.getQuaternionFromEuler(action[3:6])) + [action[6]]
-       
+
+        if environment._p.readUserDebugParameter(throw_switch) > 1:
+       		
+       		action , grasped, lifted, throw_timeout = throw(environment, arm, action, xyz, ori, grip, cube_pos, grasped, lifted, throw_timeout, img, environment._p.readUserDebugParameter(throw_range))
+
+       	elif environment._p.readUserDebugParameter(grasp_switch) > 1:
+       		action , grasped, lifted = grasp_primitive(environment, arm, action, xyz, ori, grip, cube_pos, grasped, lifted, img)
+       	
+
         state, motor_action, reward, done, info = environment.step_to(action, abs_rel)
         obs = environment.getSceneObservation()
 
@@ -334,36 +580,6 @@ def setup_controllable_camera(environment):
     environment._p.addUserDebugParameter("Camera Z", -10, 10,0)
 
 
-
-
-
-def setup_controllable_motors(environment, arm):
-    
-
-    possible_range = 2.5  # some seem to go to 3, 2.5 is a good rule of thumb to limit range.
-    motorsIds = []
-
-    for tests in range(0, environment._arm.numJoints):  # motors
-
-        jointInfo = p.getJointInfo(environment._arm.uid, tests)
-        #print(jointInfo)
-        qIndex = jointInfo[3]
-
-        if arm == 'kuka':
-            if qIndex > -1 and jointInfo[0] != 7:
-        
-                motorsIds.append(environment._p.addUserDebugParameter("Motor" + str(tests),
-                                                              -possible_range,
-                                                              possible_range,
-                                                              0.0))
-        else:
-            motorsIds.append(environment._p.addUserDebugParameter("Motor" + str(tests),
-                                                              -possible_range,
-                                                              possible_range,
-                                                              0.0))
-
-    return motorsIds
-
 def update_camera(environment):
     if environment._renders:
         #Lets reserve the first 6 user debug params for the camera
@@ -375,42 +591,6 @@ def update_camera(environment):
                                       environment._p.readUserDebugParameter(5)])
 
 
-
-def send_commands_to_motor(environment, motorIds):
-
-    done = False
-
-
-    while (not done):
-        action = []
-
-        for motorId in motorIds:
-            action.append(environment._p.readUserDebugParameter(motorId))
-        print(action)
-        state, reward, done, info = environment.step(action)
-        obs = environment.getSceneObservation()
-        update_camera(environment)
-
-
-    environment.terminated = 1
-
-def control_individual_motors(environment, arm):
-    motorIds = setup_controllable_motors(environment, arm)
-    send_commands_to_motor(environment, motorIds)
-
-
-
-###################################################################################################
-def make_dir(string):
-    try:
-        os.makedirs(string)
-    except FileExistsError:
-        pass # directory already exists
-
-
-
-#####################################################################################
-
 def str_to_bool(string):
     if str(string).lower() == "true":
             string = True
@@ -420,34 +600,23 @@ def str_to_bool(string):
     return string
 
 
-
-def launch(mode, arm, abs_rel, render):
-    print(arm)
+def launch(render):
+    arm = 'ur5'
     
     environment = graspingEnv(renders=str_to_bool(render), arm = arm)
 
     if environment._renders:
-        setup_controllable_camera(environment)
+    	setup_controllable_camera(environment)
 
-    print(mode)
-    if mode == 'xyz':
-            move_in_xyz(environment, arm, abs_rel)
-    else:
-        control_individual_motors(environment, arm)
-
+    
+    move_in_xyz(environment, arm)
 
 
 @click.command()
-@click.option('--mode', type=str, default='xyz', help='motor: control individual motors, xyz: control xyz/rpw of gripper, demos: collect automated demos')
-@click.option('--abs_rel', type=str, default='abs', help='absolute or relative positioning, abs doesnt really work with rbx1 yet')
-@click.option('--arm', type=str, default='ur5', help='rbx1 or kuka')
 @click.option('--render', type=bool, default=True, help='rendering')
-
-
 
 def main(**kwargs):
     launch(**kwargs)
 
 if __name__ == "__main__":
     main()
-

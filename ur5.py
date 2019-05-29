@@ -103,8 +103,8 @@ class ur5:
 
     def resetJointPoses(self):
                 # move to this ideal init point
-        for i in range(0,1000):
-            self.action([0.0, 1.2105262279510498, -1.9736841917037964, -0.9210526943206787, 1.526315689086914, 0.0, -0.10526323318481445, 0.0, 0.0, 0.0])
+        for i in range(0,20000):
+            self.action([0.15328961509984124, 1.1997550747592132, -1.5820032364177563, -1.2879050862601897, 1.5824233979484994, 0.19581299859677043, 0.012000000476837159, -0.012000000476837159])
 
 
 
@@ -139,7 +139,7 @@ class ur5:
 
 
     def action(self, motorCommands):
-        print(motorCommands)
+        #print(motorCommands)
         
         poses = []
         indexes = []
@@ -174,10 +174,11 @@ class ur5:
 
         # print(jointPose)
         # print(self.getObservation()[:len(self.controlJoints)]) ## get the current joint positions
-        jointPose[-1] = -finger_angle/25 
-        jointPose[-2] = finger_angle/25
+        print(len(jointPose))
+        jointPose[7] = -finger_angle/25 
+        jointPose[6] = finger_angle/25
         
         self.action(jointPose)
-        print(jointPose)
+        #print(jointPose)
         return jointPose
 
