@@ -1,4 +1,76 @@
 
+from __future__ import absolute_import
+from __future__ import division
+from __future__ import print_function
+
+import numpy as np
+
+import tensorflow as tf
+from tensorflow.python import tf2
+if not tf2.enabled():
+  import tensorflow.compat.v2 as tf
+  tf.enable_v2_behavior()
+  assert tf2.enabled()
+
+# print(tf2.enabled())
+
+import tensorflow_probability as tfp
+
+import tensorflow_datasets as tfds
+
+
+tfk = tf.keras
+tfkl = tf.keras.layers
+tfpl = tfp.layers
+tfd = tfp.distributions
+tfb = tfp.bijectors
+
+from tensorflow.compat.v1 import ConfigProto
+from tensorflow.compat.v1 import InteractiveSession
+
+config = ConfigProto()
+config.gpu_options.allow_growth = True
+session = InteractiveSession(config=config)
+
+
+from tensorflow.keras.layers import Dense, Flatten, Conv2D,Bidirectional, LSTM, Dropout
+from tensorflow.compat.v1.keras.layers import CuDNNLSTM
+from tensorflow.keras import Model
+from tensorflow.keras.models import  Sequential
+import matplotlib.pyplot as plt
+import datetime
+import os
+from tqdm import tqdm, tqdm_notebook
+import random
+from natsort import natsorted, ns
+import imageio
+from IPython import display
+from PIL import Image
+from IPython.display import clear_output
+import IPython
+import time
+import seaborn as sns
+import matplotlib.patheffects as PathEffects
+from sklearn.decomposition import PCA
+from sklearn.manifold import TSNE
+import umap
+import pandas as pd
+import traceback
+
+
+
+print('Importing viz libraries...')
+# Load the TensorBoard notebook extension
+
+print('Tensorflow version (should be >= 2.0): '+tf.__version__)
+if tf.test.gpu_device_name() != '/device:GPU:0':
+  print('WARNING: GPU device not found.')
+
+else:
+  print('SUCCESS: Found GPU: {}'.format(tf.test.gpu_device_name()))
+
+
+
 
 throw_num = 0
 import os, inspect
@@ -29,6 +101,7 @@ import sys
 from scenes import * # where our loading stuff in functions are held
 import imageio
 import cv2
+from model import *
 
 viewMatrix = p.computeViewMatrixFromYawPitchRoll(cameraTargetPosition = [0,0,0], distance = 0.3, yaw = 90, pitch = -90, roll = 0, upAxisIndex = 2) 
 projectionMatrix = p.computeProjectionMatrixFOV(fov = 120,aspect = 1,nearVal = 0.01,farVal = 10)
@@ -36,7 +109,26 @@ projectionMatrix = p.computeProjectionMatrixFOV(fov = 120,aspect = 1,nearVal = 0
 image_renderer = p.ER_BULLET_HARDWARE_OPENGL # if the rendering throws errors, use ER_TINY_RENDERER, but its hella slow cause its cpu not gpu.
 cam_dims = 200
 
+params = {'EPOCHS':100, 'BETA':0.035, 'ALPHA':0.0, 
+                      'MIN_SEQ_LEN':16, 'MAX_SEQ_LEN':47, 'MAX_EVER_SEQ_LEN':47, 
+                      'LATENT_DIM':20, 'LAYER_SIZE':2048,
+                      'ACTION_DIM':8,
+                      'NUM_DISTRIBUTIONS':1, 'NUM_QUANTISATIONS':256,
+                      'DISCRETIZED' : False, 'RELATIVE' : False,
+                      'P_DROPOUT' : 0.0, 'BETA_ANNEAL':1.0, 'THRESHOLD' : -999,'TEST':True, 'ARM_IN_GOAL':False, 
+                      'OBS_DIM':28}
 
+model_trainer = Model_Trainer(None, **params)
+
+
+extension = 'Yeetbot_v3_4000ep_overfit_beta50_3'
+model_trainer.load_weights(extension)
+encoder = model_trainer.encoder
+actor = model_trainer.actor
+
+
+global file_ix
+file_ix=0
 
 def collect_past_trajs():
     file_goal_pairs = []
@@ -95,7 +187,6 @@ def gripper_camera(obs):
 	np_img_arr = np.reshape(rgb, (h,w,4))
 
 	return img, np_img_arr[:,:,:3]
-
 class graspingEnv(gym.Env):
     metadata = {
         'render.modes': ['human', 'rgb_array'],
@@ -368,23 +459,16 @@ def grasp_primitive(environment, arm, action, xyz, ori, grip, cube_pos, grasped,
 			#we are close enough to move down
 			
 			print('moving to grasp', grasped, lifted)
-			action[2] = xyz[2]
-			print(action[2], '---------------------')
 			
-			# if xyz[2] > cube_pos[2]+0.05:
-			# 	action[2] = xyz[2] - (xyz[2]-0.00)**2
-			# else:
-			# 	action[2] = xyz[2] + (xyz[2]-0.000)**2
-			
+			if xyz[2] > cube_pos[2]+0.2:
+				action[2] = xyz[2] - (xyz[2]-0.005)**2
+			else:
+				action[2] = xyz[2] -0.003
 			# if xyz[2] > cube_pos[2]+0.05:
 			# 	action[2] = xyz[2] - 0.003
 			# else:
 			# 	action[2] = xyz[2] + 0.003
 
-			if xyz[2] > cube_pos[2]+0.05:
-				action[2] = xyz[2] - (xyz[2]-0.005)**2
-			else:
-				action[2] = xyz[2] + (xyz[2]-0.005)**2
 			
 
 				
@@ -531,42 +615,79 @@ def save_image(rgb):
 	
 	imageio.imwrite('rgb.jpg', rgb)
 
-
-
 def do_past_throw(environment):
-
-    throw = random.choice(file_goal_pairs)
+    global file_ix
+    # throw = random.choice(file_goal_pairs)
+    throw = file_goal_pairs[file_ix]
+    file_ix+=1
     #throw = file_goal_pairs[15]
         
+    obs = tf.expand_dims(throw[2].astype('float32'),0)
+    actions = tf.expand_dims(throw[3].astype('float32'),0)
+    obs = tf.constant(obs)
+    actions = tf.constant(actions)
 
-    actions = throw[3]
+    mu_enc, s_enc = encoder(obs, actions)
+    encoder_normal = tfd.Normal(mu_enc,s_enc)
+    z = encoder_normal.sample()
+
+    if model_trainer.ARM_IN_GOAL:
+        s_g = obs[-1][:-6]
+    else:
+        s_g = obs[-1][8:-6]
+
+    print(actions)
+	  
+
+
+    s_g =   tf.expand_dims(tf.constant(s_g), axis = 0)
+    z = tf.tile(z, [1, obs.shape[1]])
+    z = tf.reshape(z, [-1, obs.shape[1], model_trainer.LATENT_DIM]) # so that both end up as BATCH, SEQ, DIM
+    mu, scale, prob_weight, pdf, obs_pred, gripper= actor(obs,z,s_g)
+    ai_actions = np.squeeze(pdf.sample())
+    print(ai_actions)
+
     p.addUserDebugLine([0,0,0], list(throw[1])+[0.0], lifeTime = 5.0)
     
     p.addUserDebugText('o',list(throw[1])+[0.0], lifeTime = 5.0)
+
+    
+    actions = actions.numpy()
+    actions= np.squeeze(actions)
+    print(gripper.shape)
+    print(np.expand_dims(np.squeeze(gripper),1).shape)
+    print(ai_actions.shape)
+    actions = np.concatenate((ai_actions, np.expand_dims(np.squeeze(gripper),1)), axis=1)
     for i in range(0,100): # go to starting point
         state, motor_action, reward, done, info = environment.step_to(actions[0,:])
     for a in range(0,len(actions)):
-        state, motor_action, reward, done, info = environment.step_to(actions[a,:], repeat = 1)
-
-        
-
+        print(actions[a,:])
+        state, motor_action, reward, done, info = environment.step_to(actions[a,:], repeat = 2)
         
     cube_pos = get_scene_observation(environment.objects)[0:3]
+    print(cube_pos)
     while  cube_pos[2] > 0.1:
         cube_pos = get_scene_observation(environment.objects)[0:3]
         time.sleep(environment._timeStep)
-        
-        p.stepSimulation()
+        # save obs, acts, cubepos0,1 into a tuple in another folder
+        print(file_ix)
+        try:
+            play_sequence = 'sim_labelled_data/'
+            file = throw[0].split('/')[-1]
+            os.mkdir(play_sequence+file)
+            np.save(play_sequence+file+'/obs',obs)
+            np.save(play_sequence+file+'/act',actions)
+            np.save(play_sequence+file+'/xyfinal',np.array([cube_pos[0], cube_pos[1]]))
+            p.stepSimulation()
+        except:
+            print('already exists')
 
     if cube_pos[0] > 0.2:
         p.addUserDebugText('o',list(cube_pos), lifeTime = 3.0, textColorRGB =[1,0,0])
     
 
-
+    #imageio.imwrite('rgb.jpg', rgb)
    
-
-
-
 
 
 

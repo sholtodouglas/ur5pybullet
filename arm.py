@@ -129,7 +129,7 @@ class graspingEnv(gym.Env):
         p.setPhysicsEngineParameter(numSolverIterations=150)
         if not self._vr:
             p.setTimeStep(self._timeStep)
-        self.objects = load_lab_Z_up()
+        self.objects = throwing_scene()
 
         p.setGravity(0, 0, -10)
         if self._arm_str == 'rbx1':
@@ -340,7 +340,7 @@ def setup_controllable_camera(environment):
 def setup_controllable_motors(environment, arm):
     
 
-    possible_range = 2.5  # some seem to go to 3, 2.5 is a good rule of thumb to limit range.
+    possible_range = 3.2  # some seem to go to 3, 2.5 is a good rule of thumb to limit range.
     motorsIds = []
 
     for tests in range(0, environment._arm.numJoints):  # motors
@@ -433,6 +433,8 @@ def launch(mode, arm, abs_rel, render):
     if mode == 'xyz':
             move_in_xyz(environment, arm, abs_rel)
     else:
+        environment._arm.active = True
+
         control_individual_motors(environment, arm)
 
 

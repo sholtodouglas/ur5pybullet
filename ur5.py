@@ -1,3 +1,4 @@
+
 import os, inspect
 
 currentdir = os.path.dirname(os.path.abspath(inspect.getfile(inspect.currentframe())))
@@ -20,7 +21,11 @@ import pybullet_data
 from collections import namedtuple
 from attrdict import AttrDict
 import functools
+import time
 import itertools
+from cntrl import *
+from pyRobotiqGripper import *
+real = False
 
 def setup_sisbot(p, uid):
     # controlJoints = ["shoulder_pan_joint","shoulder_lift_joint",
@@ -63,15 +68,34 @@ class ur5:
 
 
 
-        self.robotUrdfPath = "./urdf/ur5.urdf"
-        self.robotStartPos = [0.0,0.0,0.3]
+        self.robotUrdfPath = "./urdf/real_arm.urdf"
+        self.robotStartPos = [0.0,0.0,0.0]
         self.robotStartOrn = p.getQuaternionFromEuler([1.885,1.786,0.132])
 
         self.xin = self.robotStartPos[0]
         self.yin = self.robotStartPos[1]
+
         self.zin = self.robotStartPos[2]
-        
+        self.lastJointAngle = None
+        self.active = False
+        if real:
+            self.s = init_socket()
+
+            if True:
+                self.grip=RobotiqGripper("COM8")
+                #grip.resetActivate()
+                self.grip.reset()
+                #grip.printInfo()
+                self.grip.activate()
+                #grip.printInfo()
+                #grip.calibrate()
+
+
+
+
         self.reset()
+        self.timeout = 0
+
 
     def reset(self):
         
@@ -103,9 +127,19 @@ class ur5:
 
     def resetJointPoses(self):
                 # move to this ideal init point
-        for i in range(0,20000):
-            self.action([0.15328961509984124, 1.1997550747592132, -1.5820032364177563, -1.2879050862601897, 1.5824233979484994, 0.19581299859677043, 0.012000000476837159, -0.012000000476837159])
+        self.active = False
 
+        for i in range(0,50000):
+            self.action([0.15328961509984124, -1.8, -1.5820032364177563, -1.2879050862601897, 1.5824233979484994, 0.19581299859677043, 0.012000000476837159, -0.012000000476837159])
+        self.active = True
+
+        if real:
+             
+
+             movej(self.s,[0.15328961509984124, -1.8, -1.5820032364177563, -1.2879050862601897, 1.5824233979484994, 0.19581299859677043, 0.012000000476837159, -0.012000000476837159],a=0.01,v=0.05,t=10.0)
+             time.sleep(10)
+
+        self.lastJointAngle = [0.15328961509984124, -1.8, -1.5820032364177563, -1.2879050862601897, 1.5824233979484994, 0.19581299859677043]
 
 
 
@@ -145,6 +179,16 @@ class ur5:
         indexes = []
         forces = []
 
+
+        # if self.lastJointAngle == None:
+        #     self.lastJointAngle =  motorCommands[0:6]
+
+        # rel_a = np.array(motorCommands[0:6]) - np.array(self.lastJointAngle) 
+
+        # clipped_a = np.clip(rel_a, -0.1, 0.1)
+        # motorCommands[0:6] = list(clipped_a+self.lastJointAngle)
+        # self.lastJointAngle =  motorCommands[0:6]
+
         for i, name in enumerate(self.controlJoints):
             joint = self.joints[name]
 
@@ -156,6 +200,22 @@ class ur5:
 
         p.setJointMotorControlArray(self.uid, indexes, p.POSITION_CONTROL, targetPositions=poses, targetVelocities =[0]*l, positionGains = [0.03]*l, forces = forces)
         #holy shit this is so much faster in arrayform!
+
+        if real and self.active:
+            
+            if time.time() > self.timeout+0.05:
+                servoj(self.s,poses[0:6],a=0,v=0,t=0.05, gain = 100, lookahead_time = 0.05)
+                self.timeout = time.time()
+
+
+                grip_angle =  max(0, min(255,int(poses[6]*255/0.04)))  # range 0 - 0.04
+                self.grip.goTo(grip_angle)
+
+
+ 
+
+
+
 
 
     
@@ -170,11 +230,18 @@ class ur5:
         
         orn = position_delta[3:7]
         finger_angle = position_delta[7]
+
+        # define our limtis. 
+        z = max(0.14, min(0.7,z))
+        x = max(-0.25, min(0.3,x))
+        y =max(-0.4, min(0.4,y))
+
+
         jointPose = list(p.calculateInverseKinematics(self.uid, self.endEffectorIndex, [x,y,z], orn))
 
         # print(jointPose)
         # print(self.getObservation()[:len(self.controlJoints)]) ## get the current joint positions
-        print(len(jointPose))
+        
         jointPose[7] = -finger_angle/25 
         jointPose[6] = finger_angle/25
         
